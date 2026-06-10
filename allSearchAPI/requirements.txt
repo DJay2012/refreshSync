@@ -1,0 +1,11 @@
+fastapi
+uvicorn[standard]
+goose3
+langdetect
+newspaper3k
+pandas
+psycopg2-binary
+python-dotenv
+tldextract
+pydantic-settings
+

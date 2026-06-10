@@ -1,0 +1,56 @@
+# Environment files - contain credentials
+.env
+.env.*
+!.env.example
+!env.example
+
+# SSL certificates and keys
+*.crt
+*.key
+*.pem
+*.p12
+*.pfx
+
+# Python cache
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+
+# Virtual environments
+venv/
+.venv/
+env/
+ENV/
+
+# Logs
+logs/
+*.log
+
+# JSON result/output files
+*_results.json
+*_output.json
+debug_output.txt
+
+# IDE / editor
+.vscode/
+.idea/
+*.code-workspace
+*.swp
+*.swo
+
+# Claude settings
+.claude/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Build artifacts
+dist/
+build/
+*.egg-info/

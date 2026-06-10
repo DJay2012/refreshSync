@@ -1,0 +1,24 @@
+{
+  "start_date": "2025-01-01",
+  "end_date": "2025-01-10",
+  "company_ids": ["CYBERPE865"],
+  "language": "en",
+  "batch_size": 100,
+  "max_workers": 4,
+  "dry_run": true,
+  "process_print": true,
+  "process_online": true
+}
+
+
+
+
+
+
+
+
+
+
+
+
+

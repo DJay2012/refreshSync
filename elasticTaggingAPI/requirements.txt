@@ -1,0 +1,12 @@
+fastapi
+uvicorn[standard]
+pydantic-settings
+python-dotenv
+elasticsearch==8.12.1
+elastic-transport==8.17.1
+psycopg2-binary
+pymongo
+nltk
+
+
+

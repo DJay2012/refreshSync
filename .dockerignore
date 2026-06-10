@@ -1,0 +1,82 @@
+# Git
+.git
+.gitignore
+
+# Documentation
+README.md
+DEPLOYMENT.md
+*.md
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual environments
+venv/
+env/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+logs/
+*.log
+
+# Test files (already removed but keeping for future)
+test_*.py
+*_test.py
+tests/
+pytest.ini
+.coverage
+htmlcov/
+
+# Development tools
+.pytest_cache/
+.mypy_cache/
+.tox/
+
+# Docker
+Dockerfile*
+docker-compose*.yml
+.dockerignore
+
+# Scripts
+scripts/
+*.sh
+
+# Temporary files
+*.tmp
+*.temp
