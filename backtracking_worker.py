@@ -35,6 +35,7 @@ except Exception as e:
     pass  # Will be handled by BACKTRACKING_AVAILABLE check
 
 from app.utils.backtracking_logger import setup_backtracking_logger
+from app.pnq.pnq_monitoring import start_heartbeat_if_configured
 from app.main import (
     BACKTRACKING_AVAILABLE,
     JobStatus,
@@ -49,13 +50,19 @@ backtracking_logger = setup_backtracking_logger()
 
 # Global flag for graceful shutdown
 worker_running = True
+_pnq_heartbeat = None
 
 
 def signal_handler(signum, frame):
     """Handle shutdown signals gracefully."""
-    global worker_running
+    global worker_running, _pnq_heartbeat
     backtracking_logger.info("🛑 Received shutdown signal, stopping worker...")
     worker_running = False
+    if _pnq_heartbeat is not None:
+        try:
+            _pnq_heartbeat.stop()
+        except Exception:
+            pass
 
 
 def run_backtracking_worker():
@@ -70,7 +77,10 @@ def run_backtracking_worker():
     - Continues running even if individual jobs fail
     - Runs until shutdown signal received
     """
-    global worker_running
+    global worker_running, _pnq_heartbeat
+
+    os.environ["PNQ_SERVICE_TAG"] = os.getenv("PNQ_BACKTRACKING_SERVICE_TAG", "backtracking-worker")
+    _pnq_heartbeat = start_heartbeat_if_configured()
     
     if not BACKTRACKING_AVAILABLE:
         backtracking_logger.error("❌ Backtracking modules not available. Worker will stay idle to keep container running.")
@@ -128,6 +138,12 @@ def run_backtracking_worker():
             backtracking_logger.error(traceback.format_exc())
             time.sleep(poll_interval)  # Sleep on error to avoid tight loop
     
+    if _pnq_heartbeat is not None:
+        try:
+            _pnq_heartbeat.stop()
+        except Exception:
+            pass
+
     backtracking_logger.info("=" * 60)
     backtracking_logger.info("BACKTRACKING WORKER STOPPED")
     backtracking_logger.info("=" * 60)

@@ -53,9 +53,12 @@ from app.models.schemas import (
 )
 from app.utils.logger import setup_logging
 from app.routers import allsearch
+from app.pnq.pnq_monitoring import start_heartbeat_if_configured
 
 # Setup logging
 logger = setup_logging()
+
+_pnq_heartbeat = None
 
 DOCS_USERNAME = os.getenv("SWAGGER_UI_USERNAME", "pnqSync")
 DOCS_PASSWORD = os.getenv("SWAGGER_UI_PASSWORD", "sync123GO!")
@@ -626,7 +629,7 @@ def process_backtracking_job(job_id: str, config_dict: Dict[str, Any]):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan manager for startup and shutdown."""
-    global refresh_service, metrics_collector, client_sync_service, boolean_transformer, espreview_engine, espreview_config, _backtracking_worker_running, _backtracking_worker_thread
+    global refresh_service, metrics_collector, client_sync_service, boolean_transformer, espreview_engine, espreview_config, _backtracking_worker_running, _backtracking_worker_thread, _pnq_heartbeat
     
     # Startup
     logger.info("Starting RefreshES API service...")
@@ -682,6 +685,11 @@ async def lifespan(app: FastAPI):
                 logger.warning(f"Failed to start backtracking worker: {e}")
         elif BACKTRACKING_AVAILABLE:
             logger.info("Backtracking worker not started in API (running as standalone process)")
+
+        # PNQ monitoring heartbeat (separate Redis connection; optional, non-blocking)
+        if not os.getenv("PNQ_SERVICE_TAG"):
+            os.environ["PNQ_SERVICE_TAG"] = "api"
+        _pnq_heartbeat = start_heartbeat_if_configured()
         
         logger.info("RefreshES API service started successfully")
         yield
@@ -692,6 +700,12 @@ async def lifespan(app: FastAPI):
     finally:
         # Shutdown
         logger.info("Shutting down RefreshES API service...")
+
+        if _pnq_heartbeat is not None:
+            try:
+                _pnq_heartbeat.stop()
+            except Exception as e:
+                logger.debug("PNQ heartbeat shutdown: %s", e)
         
         # Stop backtracking worker
         if BACKTRACKING_AVAILABLE:
