@@ -1591,11 +1591,21 @@ def _openai_boolean_sync(query: str, lang_code: str, lang_name: str, script: str
                     {"role": "user", "content": user_prompt},
                 ],
                 temperature=0.2 if attempt >= 2 else 0.3,
-                max_tokens=2048,
+                max_tokens=16384,
             )
             result = (resp.choices[0].message.content or "").strip()
             if not result:
                 continue
+            # Guard against silently returning a half-translated query when the
+            # model hit the output token cap (long Boolean queries in Indic
+            # scripts expand well beyond the English input).
+            finish_reason = getattr(resp.choices[0], "finish_reason", None)
+            if finish_reason == "length":
+                logger.warning(
+                    f"OpenAI {mode} output truncated for {lang_code} (attempt {attempt + 1}): hit max_tokens"
+                )
+                if attempt < 2:
+                    continue
             is_valid, err = _validate_script(result, lang_code)
             if not is_valid:
                 logger.warning(f"Script validation failed for {lang_code} (attempt {attempt + 1}): {err}")
