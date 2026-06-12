@@ -12,9 +12,9 @@ read -p "Enter port to expose (default 8000): " INPUT_PORT
 INPUT_PORT=${INPUT_PORT:-8000}
 echo "Using port: $INPUT_PORT"
 
-# Write API_PORT to .env
+# Write API_PORT to .env (grep -v instead of sed -i so it works on both Linux and macOS)
 if [ -f .env ]; then
-    sed -i '/^API_PORT=/d' .env
+    grep -v '^API_PORT=' .env > .env.tmp && mv .env.tmp .env
 fi
 echo "API_PORT=$INPUT_PORT" >> .env
 echo ""
@@ -75,14 +75,6 @@ for container in $(docker ps -q --filter "publish=$INPUT_PORT" 2>/dev/null); do
     docker rm $container >/dev/null 2>&1 || true
 done
 
-# Check and stop individual containers that might conflict on Redis port
-echo "🛑 Checking for conflicting containers on port 6379..."
-for container in $(docker ps -q --filter "publish=6379" 2>/dev/null); do
-    echo "  Stopping container $container on port 6379..."
-    docker stop $container >/dev/null 2>&1 || true
-    docker rm $container >/dev/null 2>&1 || true
-done
-
 # Stop any existing RefreshES API containers
 echo "🛑 Stopping existing RefreshES API containers..."
 $COMPOSE_CMD down >/dev/null 2>&1 || true
@@ -92,10 +84,26 @@ echo "🧹 Cleaning up orphaned containers..."
 docker rm refresh-es-api-prod >/dev/null 2>&1 || true
 docker rm refresh-es-redis-prod >/dev/null 2>&1 || true
 
+# Docker Hub login (pnqresearch/refreshsync is an org repo; login as an org
+# member with read access). Skip if this server is already logged in.
+DOCKERHUB_LOGIN_USER="${DOCKERHUB_USER:-kumarpnq}"
+read -p "Login to Docker Hub as $DOCKERHUB_LOGIN_USER before pulling? (y/n, default n): " do_login
+if [[ "$do_login" == "y" ]]; then
+    if [ -n "$DOCKERHUB_PASSWORD" ]; then
+        echo "$DOCKERHUB_PASSWORD" | docker login -u "$DOCKERHUB_LOGIN_USER" --password-stdin
+    else
+        read -s -p "Docker Hub password/token for $DOCKERHUB_LOGIN_USER: " DOCKERHUB_PW
+        echo ""
+        echo "$DOCKERHUB_PW" | docker login -u "$DOCKERHUB_LOGIN_USER" --password-stdin
+    fi
+    echo "✅ Docker Hub login successful"
+fi
+
 # Pull latest images from Docker Hub
-echo "📥 Pulling latest images from Docker Hub..."
+echo "📥 Pulling latest images from Docker Hub (pnqresearch/refreshsync)..."
 if ! $COMPOSE_CMD pull; then
     echo "❌ Failed to pull images. Check your internet connection and Docker Hub access."
+    echo "   If the repo is private, re-run and answer 'y' to the login prompt."
     exit 1
 fi
 echo "✅ Images pulled successfully"
@@ -131,7 +139,7 @@ echo "🌐 Access URLs:"
 echo "   API: http://localhost:$INPUT_PORT"
 echo "   API Docs: http://localhost:$INPUT_PORT/docs"
 echo "   Health Check: http://localhost:$INPUT_PORT/health"
-echo "   Redis: localhost:6379"
+echo "   Redis: internal only (refresh-es-network, no host port)"
 echo ""
 echo "📋 Useful commands:"
 echo "   View logs: $COMPOSE_CMD logs -f"

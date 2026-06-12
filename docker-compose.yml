@@ -1,7 +1,7 @@
 services:
   refresh-es-api:
     build: .
-    image: kumarpnq/refresh-es-api:latest
+    image: pnqresearch/refreshsync:latest
     container_name: refresh-es-api-prod
     user: "1000:1000"
     ports:
@@ -56,7 +56,7 @@ services:
       - PNQ_SERVICE_TAG=${PNQ_SERVICE_TAG:-api}
       - PNQ_HOST_OS=${PNQ_HOST_OS:-Linux}
       - PNQ_CONTAINER_NAME=${PNQ_CONTAINER_NAME:-refresh-es-api-prod}
-      - PNQ_IMAGE=${PNQ_IMAGE:-kumarpnq/refresh-es-api:latest}
+      - PNQ_IMAGE=${PNQ_IMAGE:-pnqresearch/refreshsync:latest}
       - PNQ_DEPLOYMENT_ENV=${PNQ_DEPLOYMENT_ENV:-production}
     volumes:
       - ./logs:/app/logs

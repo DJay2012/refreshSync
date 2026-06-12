@@ -49,7 +49,7 @@ set FULL_IMAGE_NAME=%IMAGE_NAME%:%IMAGE_TAG%
 
 REM Docker Hub settings
 set DOCKERHUB_USERNAME=kumarpnq
-set DOCKERHUB_REPO=%DOCKERHUB_USERNAME%/refresh-es-api
+set DOCKERHUB_REPO=pnqresearch/refreshsync
 
 echo Current version: %IMAGE_TAG%
 echo.
@@ -66,7 +66,7 @@ set /p NEW_VERSION="New version: "
 echo|set /p="%NEW_VERSION%" > version.txt
 set IMAGE_TAG=%NEW_VERSION%
 set FULL_IMAGE_NAME=%IMAGE_NAME%:%IMAGE_TAG%
-set DOCKERHUB_REPO=%DOCKERHUB_USERNAME%/refresh-es-api
+set DOCKERHUB_REPO=pnqresearch/refreshsync
 echo New version: %IMAGE_TAG%
 echo.
 goto :continue
@@ -121,7 +121,7 @@ echo.
 REM Docker Hub login
 echo Attempting Docker Hub login...
 echo.
-docker login
+docker login -u %DOCKERHUB_USERNAME%
 
 if %ERRORLEVEL% NEQ 0 (
     echo Docker login failed!

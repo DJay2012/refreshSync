@@ -20,8 +20,10 @@ if [ ! -f version.txt ]; then
 fi
 
 IMAGE_TAG=$(cat version.txt | tr -d '[:space:]')
-DOCKERHUB_LOGIN_USER="kumarpnq"
-DOCKERHUB_REPO="kumarpnq/refresh-es-api"
+# Login as personal account (org member with write access to pnqresearch).
+# Override without editing: DOCKERHUB_USER=yourname ./build-and-push.sh
+DOCKERHUB_LOGIN_USER="${DOCKERHUB_USER:-kumarpnq}"
+DOCKERHUB_REPO="pnqresearch/refreshsync"
 
 echo "Current version: $IMAGE_TAG"
 echo ""
@@ -44,7 +46,14 @@ echo ""
 echo "========================================"
 echo "Step 1: Docker Hub Login (as $DOCKERHUB_LOGIN_USER)"
 echo "========================================"
-docker login --username "$DOCKERHUB_LOGIN_USER"
+# Password/token can be supplied via DOCKERHUB_PASSWORD env var (CI), else prompt
+if [ -n "$DOCKERHUB_PASSWORD" ]; then
+    echo "$DOCKERHUB_PASSWORD" | docker login -u "$DOCKERHUB_LOGIN_USER" --password-stdin
+else
+    read -s -p "Docker Hub password/token for $DOCKERHUB_LOGIN_USER: " DOCKERHUB_PW
+    echo ""
+    echo "$DOCKERHUB_PW" | docker login -u "$DOCKERHUB_LOGIN_USER" --password-stdin
+fi
 if [ $? -ne 0 ]; then
     echo "Docker login failed!"
     exit 1
