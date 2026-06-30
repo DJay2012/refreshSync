@@ -60,19 +60,27 @@ def _scrape_with_scrapingdog(url: str) -> dict:
     if not api_key:
         raise ValueError("SCRAPINGDOG_API_KEY environment variable not set")
 
-    params = {
+    base_params = {
         "api_key": api_key,
         "url": url,
-        "dynamic": "true",
     }
-    response = http_requests.get(
-        "https://api.scrapingdog.com/scrape",
-        params=params,
-        timeout=60,
-        headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"},
-    )
-    if response.status_code != 200:
-        raise ValueError(f"ScrapingDog returned status {response.status_code}: {response.text[:200]}")
+    response = None
+    last_error = None
+    for dynamic in ("true", "false"):
+        resp = http_requests.get(
+            "https://api.scrapingdog.com/scrape",
+            params={**base_params, "dynamic": dynamic},
+            timeout=60,
+            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"},
+        )
+        if resp.status_code == 200:
+            response = resp
+            break
+        last_error = f"ScrapingDog returned status {resp.status_code}: {resp.text[:200]}"
+        logger.warning("ScrapingDog dynamic=%s failed for %s: %s", dynamic, url, last_error)
+
+    if response is None:
+        raise ValueError(last_error)
 
     html_content = response.text
     if not html_content or len(html_content) < 200:
