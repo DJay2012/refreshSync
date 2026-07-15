@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Optional
+from typing import Any, List, Optional
 
 from pydantic import BaseModel, Field, HttpUrl, ConfigDict, validator
 
@@ -102,5 +102,122 @@ class AdhocScrapeResponse(BaseModel):
     content: Optional[str] = None
     publication: Optional[str] = None
     articledate: Optional[datetime] = Field(None, alias="articleDate")
+
+
+class InstagramScrapeRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+
+    urls: List[HttpUrl] = Field(..., min_length=1)
+
+    @validator("urls")
+    def _validate_instagram_urls(cls, value):  # noqa: N805
+        for url in value:
+            if "instagram.com" not in str(url):
+                raise ValueError(f"Not an Instagram URL: {url}")
+        return value
+
+
+class InstagramPostPayload(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="allow")
+
+    url: Optional[str] = None
+    post_id: Optional[str] = Field(None, alias="postId")
+    shortcode: Optional[str] = None
+    content_type: Optional[str] = Field(None, alias="contentType")
+    caption: Optional[str] = None
+    hashtags: Optional[List[str]] = None
+    mentions: Optional[List[str]] = None
+    likes: Optional[int] = None
+    num_comments: Optional[int] = Field(None, alias="numComments")
+    video_view_count: Optional[int] = Field(None, alias="videoViewCount")
+    video_play_count: Optional[int] = Field(None, alias="videoPlayCount")
+    is_video: Optional[bool] = Field(None, alias="isVideo")
+    video_url: Optional[str] = Field(None, alias="videoUrl")
+    display_url: Optional[str] = Field(None, alias="displayUrl")
+    images: Optional[List[str]] = None
+    owner_username: Optional[str] = Field(None, alias="ownerUsername")
+    owner_full_name: Optional[str] = Field(None, alias="ownerFullName")
+    owner_id: Optional[str] = Field(None, alias="ownerId")
+    followers: Optional[int] = None
+    is_verified: Optional[bool] = Field(None, alias="isVerified")
+    location: Optional[str] = None
+    published_at: Optional[datetime] = Field(None, alias="publishedAt")
+
+    @validator("published_at", pre=True)
+    def _parse_published_at(cls, value):  # noqa: N805
+        if value in (None, ""):
+            return None
+        if isinstance(value, datetime):
+            return value
+        if isinstance(value, str):
+            try:
+                return datetime.fromisoformat(value.replace("Z", "+00:00"))
+            except ValueError:
+                return None
+        return value
+
+    @validator("images", pre=True)
+    def _coerce_images(cls, value):  # noqa: N805
+        if not isinstance(value, list):
+            return None
+        urls = []
+        for entry in value:
+            if isinstance(entry, str):
+                urls.append(entry)
+            elif isinstance(entry, dict):
+                url = entry.get("url")
+                if url:
+                    urls.append(url)
+        return urls or None
+
+    @validator("mentions", pre=True)
+    def _coerce_mentions(cls, value):  # noqa: N805
+        if not isinstance(value, list):
+            return None
+        names = []
+        for entry in value:
+            if isinstance(entry, str):
+                names.append(entry)
+            elif isinstance(entry, dict):
+                username = entry.get("username") or entry.get("full_name")
+                if username:
+                    names.append(username)
+        return names or None
+
+    @validator("location", pre=True)
+    def _coerce_location(cls, value):  # noqa: N805
+        if value is None:
+            return None
+        if isinstance(value, str):
+            return value or None
+        if isinstance(value, list):
+            names = [str(v) for v in value if v]
+            return ", ".join(names) or None
+        if isinstance(value, dict):
+            return value.get("name") or None
+        return None
+
+    @validator("hashtags", pre=True)
+    def _coerce_lists(cls, value):  # noqa: N805
+        if value is None:
+            return None
+        if isinstance(value, list):
+            return value
+        return None
+
+
+class InstagramScrapeResult(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+
+    status: str
+    url: str
+    post: Optional[InstagramPostPayload] = None
+    error: Optional[str] = None
+
+
+class InstagramScrapeResponse(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+
+    results: List[InstagramScrapeResult]
 
 

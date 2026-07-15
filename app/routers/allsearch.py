@@ -13,7 +13,16 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from langdetect import detect, LangDetectException
 
 from allSearchAPI.app.config import get_settings as get_allsearch_settings
-from allSearchAPI.app.models import AdhocScrapeResponse, ArticlePayload, ScrapeRequest, ScrapeResponse
+from allSearchAPI.app.models import (
+    AdhocScrapeResponse,
+    ArticlePayload,
+    InstagramPostPayload,
+    InstagramScrapeRequest,
+    InstagramScrapeResponse,
+    InstagramScrapeResult,
+    ScrapeRequest,
+    ScrapeResponse,
+)
 from allSearchAPI.app.publications import (
     PublicationRegistry,
     extract_main_domain,
@@ -153,6 +162,120 @@ def _scrape_with_scrapingdog(url: str) -> dict:
     }
 
 
+# --- BrightData helpers (Instagram post/reel scraping) ---
+
+BRIGHTDATA_SCRAPE_URL = "https://api.brightdata.com/datasets/v3/scrape"
+
+
+def _map_brightdata_instagram_item(item: dict) -> InstagramPostPayload:
+    """Map a raw BrightData Instagram dataset item onto our InstagramPostPayload.
+
+    Field names below reflect BrightData dataset gd_lk5ns7kz21pck8jpis's actual
+    response shape (verified against live /datasets/v3/scrape calls for both a
+    photo-carousel post and a reel): user_posted, description, num_comments,
+    date_posted, likes, photos[] (plain URL strings), videos[] (plain URL
+    strings), post_id, shortcode, content_type/product_type, thumbnail,
+    followers, is_verified, user_posted_id, tagged_users, input.url.
+    "images" duplicates "photos" but as {"url": ...} objects — used only as a
+    defensive fallback since BrightData's own docs are inconsistent here.
+    """
+    item_input = item.get("input")
+    input_url = item_input.get("url") if isinstance(item_input, dict) else None
+    videos = item.get("videos") or []
+    photos = item.get("photos") or []
+    return InstagramPostPayload(
+        url=item.get("url") or input_url,
+        post_id=item.get("post_id"),
+        shortcode=item.get("shortcode"),
+        content_type=item.get("content_type") or item.get("product_type"),
+        caption=item.get("description") or item.get("caption"),
+        hashtags=item.get("hashtags"),
+        mentions=item.get("tagged_users") or item.get("mentions"),
+        likes=item.get("likes"),
+        num_comments=item.get("num_comments"),
+        video_view_count=item.get("video_view_count"),
+        video_play_count=item.get("video_play_count"),
+        is_video=bool(videos) or item.get("content_type") == "Reel",
+        video_url=videos[0] if videos else None,
+        display_url=item.get("thumbnail") or item.get("display_url"),
+        images=photos or item.get("images"),
+        owner_username=item.get("user_posted") or item.get("owner_username"),
+        owner_full_name=item.get("profile_name") or item.get("owner_full_name"),
+        owner_id=item.get("user_posted_id") or item.get("owner_id"),
+        followers=item.get("followers"),
+        is_verified=item.get("is_verified"),
+        location=item.get("location"),
+        published_at=item.get("date_posted") or item.get("timestamp"),
+    )
+
+
+def _scrape_instagram_with_brightdata(urls: list) -> dict:
+    """Trigger a BrightData dataset scrape for one or more Instagram post/reel URLs.
+
+    Returns a dict keyed by URL -> either {"post": InstagramPostPayload} or {"error": str}.
+    """
+    api_key = os.getenv("BRIGHTDATA_API_KEY")
+    if not api_key:
+        raise ValueError("BRIGHTDATA_API_KEY environment variable not set")
+
+    dataset_id = os.getenv("BRIGHTDATA_INSTAGRAM_DATASET_ID", "gd_lk5ns7kz21pck8jpis")
+
+    resp = http_requests.post(
+        BRIGHTDATA_SCRAPE_URL,
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+        params={
+            "dataset_id": dataset_id,
+            "notify": "false",
+            "include_errors": "true",
+        },
+        json={
+            "input": [{"url": url} for url in urls],
+            "limit_per_input": None,
+        },
+        timeout=300,
+    )
+
+    if resp.status_code != 200:
+        raise ValueError(f"BrightData returned status {resp.status_code}: {resp.text[:500]}")
+
+    try:
+        data = resp.json()
+    except ValueError as exc:
+        raise ValueError(f"BrightData returned non-JSON response: {resp.text[:500]}") from exc
+
+    if isinstance(data, list):
+        items = data
+    elif isinstance(data, dict):
+        # BrightData returns a bare object (not list-wrapped) when only one
+        # item comes back; only unwrap "data"/"results" if that key actually
+        # holds a list (some BrightData endpoints wrap batches that way).
+        if isinstance(data.get("data"), list):
+            items = data["data"]
+        elif isinstance(data.get("results"), list):
+            items = data["results"]
+        else:
+            items = [data]
+    else:
+        items = []
+
+    results_by_url = {}
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        item_url = item.get("url") or item.get("input_url")
+        if isinstance(item.get("input"), dict):
+            item_url = item_url or item["input"].get("url")
+        if item.get("error") or item.get("error_code"):
+            results_by_url[item_url] = {"error": item.get("error") or item.get("error_code")}
+        else:
+            results_by_url[item_url] = {"post": _map_brightdata_instagram_item(item)}
+
+    return results_by_url
+
+
 # --- Initialize allSearchAPI components
 allsearch_settings = get_allsearch_settings()
 scraper = Scraper()
@@ -254,4 +377,29 @@ def scrape_endpoint(
         message="Article scraped successfully.",
         article=article_payload,
     )
+
+
+@router.post("/scrape/instagram", response_model=InstagramScrapeResponse, status_code=status.HTTP_200_OK)
+def scrape_instagram_endpoint(payload: InstagramScrapeRequest):
+    """Scrape Instagram post/reel data via BrightData and return the processed info."""
+    urls = [str(u) for u in payload.urls]
+
+    try:
+        results_by_url = _scrape_instagram_with_brightdata(urls)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="BrightData Instagram scrape failed") from exc
+
+    results = []
+    for url in urls:
+        entry = results_by_url.get(url)
+        if entry is None:
+            results.append(InstagramScrapeResult(status="missing", url=url, error="No data returned by BrightData for this URL."))
+        elif "error" in entry:
+            results.append(InstagramScrapeResult(status="error", url=url, error=str(entry["error"])))
+        else:
+            results.append(InstagramScrapeResult(status="scraped", url=url, post=entry["post"]))
+
+    return InstagramScrapeResponse(results=results)
 
