@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Any, List, Optional
+from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field, HttpUrl, ConfigDict, validator
 
@@ -221,3 +221,32 @@ class InstagramScrapeResponse(BaseModel):
     results: List[InstagramScrapeResult]
 
 
+class YouTubeVideoScrapeRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+
+    url: HttpUrl
+
+    @validator("url", pre=True)
+    def _strip_url(cls, value):  # noqa: N805
+        return value.strip() if isinstance(value, str) else value
+
+    @validator("url")
+    def _validate_youtube_url(cls, value):  # noqa: N805
+        host = (value.host or "").lower()
+        if host not in {"youtube.com", "www.youtube.com", "m.youtube.com", "youtu.be", "www.youtu.be"}:
+            raise ValueError("url must be a valid YouTube video URL")
+        return value
+
+
+class YouTubeVideoScrapeResponse(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+
+    video: Dict[str, Any]
+    channel: Dict[str, Any]
+    comment: Dict[str, Any]
+
+
+class YouTubeTranscriptScrapeResponse(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+
+    content: str

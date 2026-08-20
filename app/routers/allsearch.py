@@ -2,11 +2,13 @@
 Router for allSearchAPI endpoints integrated into the refresh API.
 """
 import json
+import html
 import logging
 import os
+import re
 from datetime import datetime
 from typing import Optional, Union
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 import requests as http_requests
 from bs4 import BeautifulSoup
@@ -23,6 +25,9 @@ from allSearchAPI.app.models import (
     InstagramScrapeResult,
     ScrapeRequest,
     ScrapeResponse,
+    YouTubeVideoScrapeRequest,
+    YouTubeVideoScrapeResponse,
+    YouTubeTranscriptScrapeResponse,
 )
 from allSearchAPI.app.publications import (
     PublicationRegistry,
@@ -187,6 +192,8 @@ def _scrape_with_scrapingdog(url: str) -> dict:
 # --- BrightData helpers (Instagram post/reel scraping) ---
 
 BRIGHTDATA_SCRAPE_URL = "https://api.brightdata.com/datasets/v3/scrape"
+SCRAPINGDOG_YOUTUBE_VIDEO_URL = "https://api.scrapingdog.com/youtube/video"
+SCRAPINGDOG_YOUTUBE_TRANSCRIPTS_URL = "https://api.scrapingdog.com/youtube/transcripts"
 
 
 def _map_brightdata_instagram_item(item: dict) -> InstagramPostPayload:
@@ -306,6 +313,207 @@ def _scrape_instagram_with_brightdata(urls: list) -> dict:
             results_by_url[item_url] = {"post": _map_brightdata_instagram_item(item)}
 
     return results_by_url
+
+
+def _extract_youtube_video_id(url: str) -> str:
+    """Extract a video ID from common YouTube video URL formats."""
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").lower()
+
+    if host in {"youtu.be", "www.youtu.be"}:
+        video_id = parsed.path.strip("/").split("/")[0]
+    elif host in {"youtube.com", "www.youtube.com", "m.youtube.com"}:
+        if parsed.path == "/watch":
+            video_id = parse_qs(parsed.query).get("v", [""])[0]
+        else:
+            parts = [part for part in parsed.path.split("/") if part]
+            video_id = parts[1] if len(parts) >= 2 and parts[0] in {"shorts", "embed", "live"} else ""
+    else:
+        video_id = ""
+
+    if not video_id:
+        raise ValueError("Could not extract a video ID from the YouTube URL")
+    return video_id
+
+
+def _scrape_youtube_video(url: str) -> dict:
+    """Fetch YouTube video metadata from ScrapingDog and filter its response."""
+    api_key = os.getenv("SCRAPINGDOG_API_KEY")
+    if not api_key:
+        raise RuntimeError("SCRAPINGDOG_API_KEY environment variable not set")
+
+    response = http_requests.get(
+        SCRAPINGDOG_YOUTUBE_VIDEO_URL,
+        params={
+            "api_key": api_key,
+            "v": _extract_youtube_video_id(url),
+            "country": "in",
+        },
+        timeout=60,
+    )
+    if response.status_code != 200:
+        provider_detail = None
+        try:
+            error_payload = response.json()
+            if isinstance(error_payload, dict):
+                provider_detail = (
+                    error_payload.get("error")
+                    or error_payload.get("message")
+                    or error_payload.get("detail")
+                )
+        except ValueError:
+            provider_detail = response.text.strip()[:300]
+
+        if provider_detail:
+            provider_detail = str(provider_detail).replace(api_key, "[REDACTED]")
+            raise ValueError(
+                f"ScrapingDog returned status {response.status_code}: {provider_detail}"
+            )
+        raise ValueError(f"ScrapingDog returned status {response.status_code} without error details")
+
+    try:
+        data = response.json()
+    except ValueError as exc:
+        raise ValueError("ScrapingDog returned an invalid JSON response") from exc
+    if not isinstance(data, dict):
+        raise ValueError("ScrapingDog returned an unexpected response")
+
+    raw_video = data.get("video") if isinstance(data.get("video"), dict) else {}
+    video = dict(raw_video)
+    video_defaults = {
+        "id": "not available",
+        "title": "not available",
+        "views": "not available",
+        "likes": "not available",
+        "author": "not available",
+        "published_time": "not available",
+        "description": "not available",
+        "keywords": [],
+        "thumbnail": "not available",
+    }
+    for key, fallback in video_defaults.items():
+        if video.get(key) is None or video.get(key) == "":
+            video[key] = fallback
+
+    raw_channel = data.get("channel") if isinstance(data.get("channel"), dict) else {}
+    channel = {
+        key: raw_channel.get(key) or "not available"
+        for key in ("id", "name", "link")
+    }
+
+    raw_comment = data.get("comment") if isinstance(data.get("comment"), dict) else {}
+    comment = dict(raw_comment)
+    if comment.get("total") is None or comment.get("total") == "":
+        comment["total"] = "not available"
+
+    return {"video": video, "channel": channel, "comment": comment}
+
+
+def _scrape_youtube_transcript(url: str) -> str:
+    """Fetch transcript segments from ScrapingDog and combine their text."""
+    api_key = os.getenv("SCRAPINGDOG_API_KEY")
+    if not api_key:
+        raise RuntimeError("SCRAPINGDOG_API_KEY environment variable not set")
+
+    response = http_requests.get(
+        SCRAPINGDOG_YOUTUBE_TRANSCRIPTS_URL,
+        params={
+            "api_key": api_key,
+            "v": _extract_youtube_video_id(url),
+            "country": "in",
+        },
+        timeout=60,
+    )
+    if response.status_code != 200:
+        provider_detail = None
+        try:
+            error_payload = response.json()
+            if isinstance(error_payload, dict):
+                provider_detail = (
+                    error_payload.get("error")
+                    or error_payload.get("message")
+                    or error_payload.get("detail")
+                )
+        except ValueError:
+            provider_detail = response.text.strip()[:300]
+
+        if provider_detail:
+            provider_detail = str(provider_detail).replace(api_key, "[REDACTED]")
+            raise ValueError(
+                f"ScrapingDog returned status {response.status_code}: {provider_detail}"
+            )
+        raise ValueError(f"ScrapingDog returned status {response.status_code} without error details")
+
+    try:
+        data = response.json()
+    except ValueError as exc:
+        raise ValueError("ScrapingDog returned an invalid JSON response") from exc
+    if not isinstance(data, dict) or not isinstance(data.get("transcripts"), list):
+        raise ValueError("ScrapingDog returned an unexpected transcript response")
+
+    text_segments = []
+    for segment in data["transcripts"]:
+        if not isinstance(segment, dict) or not isinstance(segment.get("text"), str):
+            continue
+        normalized_text = _clean_transcript_text(segment["text"])
+        if normalized_text:
+            text_segments.append(normalized_text)
+
+    if not text_segments:
+        return "not available"
+
+    cleaned_transcript = _clean_transcript_text(" ".join(text_segments))
+    return _format_transcript_paragraphs(cleaned_transcript)
+
+
+def _clean_transcript_text(text: str) -> str:
+    """Decode caption artifacts and normalize transcript text for reading."""
+    cleaned = text
+    for _ in range(3):
+        decoded = html.unescape(cleaned)
+        if decoded == cleaned:
+            break
+        cleaned = decoded
+
+    cleaned = re.sub(
+        r"\[(?:music|applause|laughter|cheering|silence)\]",
+        " ",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    cleaned = cleaned.replace(">>", " ")
+    cleaned = re.sub(r"\s+", " ", cleaned)
+    cleaned = re.sub(r"\s+([,.;:!?])", r"\1", cleaned)
+    return cleaned.strip()
+
+
+def _format_transcript_paragraphs(text: str) -> str:
+    """Group transcript sentences into readable, topic-aware paragraphs."""
+    sentences = re.split(r"(?<=[.!?])\s+(?=[\"']?[A-Z0-9])", text)
+    sentences = [sentence.strip() for sentence in sentences if sentence.strip()]
+    if not sentences:
+        return text
+
+    transition_pattern = re.compile(
+        r"^(?:now\b|moving on\b|shifting focus\b|in terms of\b|as for\b|"
+        r"features-wise\b|importantly\b|interestingly\b|then again\b|"
+        r"long story short\b|of the other things\b|prices?\b)",
+        flags=re.IGNORECASE,
+    )
+
+    paragraphs = []
+    current = []
+    for sentence in sentences:
+        starts_new_topic = bool(transition_pattern.match(sentence))
+        if current and (len(current) >= 6 or (len(current) >= 2 and starts_new_topic)):
+            paragraphs.append(" ".join(current))
+            current = []
+        current.append(sentence)
+
+    if current:
+        paragraphs.append(" ".join(current))
+
+    return "\n\n".join(paragraphs)
 
 
 # --- Initialize allSearchAPI components
@@ -435,3 +643,33 @@ def scrape_instagram_endpoint(payload: InstagramScrapeRequest):
 
     return InstagramScrapeResponse(results=results)
 
+
+@router.post("/scrape/youtube-video", response_model=YouTubeVideoScrapeResponse, status_code=status.HTTP_200_OK)
+def scrape_youtube_video_endpoint(payload: YouTubeVideoScrapeRequest):
+    """Scrape selected YouTube video metadata via ScrapingDog."""
+    try:
+        return YouTubeVideoScrapeResponse(**_scrape_youtube_video(str(payload.url)))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+    except http_requests.RequestException as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="ScrapingDog request failed") from exc
+
+
+@router.post(
+    "/scrape/youtube-transcript",
+    response_model=YouTubeTranscriptScrapeResponse,
+    status_code=status.HTTP_200_OK,
+)
+def scrape_youtube_transcript_endpoint(payload: YouTubeVideoScrapeRequest):
+    """Scrape and combine a YouTube video's transcript via ScrapingDog."""
+    try:
+        transcript = _scrape_youtube_transcript(str(payload.url))
+        return YouTubeTranscriptScrapeResponse(content=transcript)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+    except http_requests.RequestException as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="ScrapingDog request failed") from exc
