@@ -1,6 +1,7 @@
 """
 Router for allSearchAPI endpoints integrated into the refresh API.
 """
+import json
 import logging
 import os
 from datetime import datetime
@@ -63,6 +64,24 @@ def _extract_publication_date(pub_date_str: str) -> Optional[datetime]:
         return None
 
 
+def _extract_json_ld_date(soup: BeautifulSoup) -> Optional[str]:
+    """Pull datePublished out of JSON-LD structured data, if present.
+
+    Most modern publishers (BBC, NYT, etc.) only put the date here, not in
+    the article:published_time / publish-date meta tags.
+    """
+    for script in soup.find_all("script", type="application/ld+json"):
+        try:
+            payload = json.loads(script.string or "")
+        except (ValueError, TypeError):
+            continue
+        candidates = payload if isinstance(payload, list) else [payload]
+        for candidate in candidates:
+            if isinstance(candidate, dict) and candidate.get("datePublished"):
+                return candidate["datePublished"]
+    return None
+
+
 def _scrape_with_scrapingdog(url: str) -> dict:
     """Fetch and parse an article via ScrapingDog API."""
     api_key = os.getenv("SCRAPINGDOG_API_KEY")
@@ -96,6 +115,7 @@ def _scrape_with_scrapingdog(url: str) -> dict:
         raise ValueError("Insufficient content returned from ScrapingDog")
 
     soup = BeautifulSoup(html_content, "html.parser")
+    json_ld_date = _extract_json_ld_date(soup)
     for tag in soup(["script", "style", "nav", "header", "footer", "aside"]):
         tag.decompose()
 
@@ -139,6 +159,8 @@ def _scrape_with_scrapingdog(url: str) -> dict:
         date_meta = soup.find("meta", {"name": "publish-date"})
         if date_meta:
             publication_date = _extract_publication_date(date_meta.get("content", ""))
+    if not publication_date and json_ld_date:
+        publication_date = _extract_publication_date(json_ld_date)
 
     # Site name / publication
     site_name = None
@@ -243,8 +265,18 @@ def _scrape_instagram_with_brightdata(urls: list) -> dict:
 
     try:
         data = resp.json()
-    except ValueError as exc:
-        raise ValueError(f"BrightData returned non-JSON response: {resp.text[:500]}") from exc
+    except ValueError:
+        # BrightData returns newline-delimited JSON (one object per line)
+        # when multiple input URLs are scraped in one call.
+        data = []
+        for line in resp.text.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                data.append(json.loads(line))
+            except ValueError as exc:
+                raise ValueError(f"BrightData returned unparseable response: {resp.text[:500]}") from exc
 
     if isinstance(data, list):
         items = data
