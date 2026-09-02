@@ -1,14 +1,20 @@
 from __future__ import annotations
 
+import json
+import os
 import random
 import re
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional
 
+import requests
 from goose3 import Goose
 from langdetect import LangDetectException, detect
 from newspaper import Article
+
+SCRAPINGDOG_SCRAPE_URL = "https://api.scrapingdog.com/scrape"
+SCRAPINGDOG_AI_QUERY = "Give me the article headlines and content verbatim"
 
 
 @dataclass
@@ -41,13 +47,110 @@ def _detect_language(text: str) -> str:
         return "und"
 
 
+def _extract_ai_article(response_text: str) -> tuple[str, str]:
+    text = response_text.strip()
+    title = ""
+    content = ""
+
+    try:
+        payload = response_text and json.loads(response_text)
+    except Exception:
+        payload = None
+
+    if isinstance(payload, dict):
+        title = str(
+            payload.get("headline")
+            or payload.get("headlines")
+            or payload.get("title")
+            or payload.get("article_headline")
+            or ""
+        ).strip()
+        content_value = (
+            payload.get("content")
+            or payload.get("article_content")
+            or payload.get("text")
+            or payload.get("answer")
+            or payload.get("result")
+            or payload.get("data")
+            or ""
+        )
+        content = content_value if isinstance(content_value, str) else str(content_value)
+        content = _clean_whitespace(content)
+    elif isinstance(payload, list):
+        content = _clean_whitespace(" ".join(str(item) for item in payload))
+
+    if not content:
+        content = _clean_whitespace(text)
+
+    if not title:
+        headline_match = re.search(r"(?im)^\s*(?:article\s+)?headlines?\s*:\s*(.+)$", content)
+        title_match = re.search(r"(?im)^\s*title\s*:\s*(.+)$", content)
+        match = headline_match or title_match
+        if match:
+            title = _clean_whitespace(match.group(1))
+
+    if not title:
+        for line in re.split(r"[\r\n]+", text):
+            candidate = _clean_whitespace(line.strip(" -*#"))
+            if 5 <= len(candidate) <= 220:
+                title = candidate
+                break
+
+    return _clean_titles(title), content
+
+
 class Scraper:
-    """Scrape article content using Goose with a Newspaper fallback."""
+    """Scrape article content using ScrapingDog, with legacy extractors retained."""
 
     def __init__(self) -> None:
         self._goose = Goose()
 
     def scrape(self, url: str) -> ScrapedArticle:
+        api_key = os.getenv("SCRAPINGDOG_API_KEY")
+        if not api_key:
+            raise ValueError("SCRAPINGDOG_API_KEY environment variable not set")
+
+        base_params = {
+            "api_key": api_key,
+            "url": url,
+            "ai_query": SCRAPINGDOG_AI_QUERY,
+        }
+        attempts = [
+            {"dynamic": "false"},
+            {"dynamic": "true"},
+            {"dynamic": "true", "stealth_mode": "true"},
+        ]
+
+        last_error = None
+        response = None
+        for attempt in attempts:
+            response = requests.get(
+                SCRAPINGDOG_SCRAPE_URL,
+                params={**base_params, **attempt},
+                timeout=60,
+            )
+            if response.status_code == 200:
+                break
+            last_error = f"ScrapingDog returned status {response.status_code}: {response.text[:200]}"
+        else:
+            raise ValueError(last_error or "ScrapingDog request failed")
+
+        title, text = _extract_ai_article(response.text)
+        if len(text) < 40:
+            raise ValueError("Article text is too short to be useful.")
+
+        return ScrapedArticle(
+            url=url,
+            title=title,
+            text=text,
+            summary=_build_summary(text),
+            language=_detect_language(text),
+            author=None,
+            image_url=None,
+            published_at=None,
+        )
+
+    def scrape_legacy(self, url: str) -> ScrapedArticle:
         try:
             goose_article = self._goose.extract(url=url)
         except Exception:
@@ -130,5 +233,3 @@ def generate_txn_number() -> str:
 
 def count_words(text: str) -> int:
     return len(text.split())
-
-

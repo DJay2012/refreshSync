@@ -250,3 +250,4 @@ class YouTubeTranscriptScrapeResponse(BaseModel):
     model_config = ConfigDict(populate_by_name=True, extra="forbid")
 
     content: str
+    duration_seconds: Optional[float] = Field(None, alias="durationSeconds")

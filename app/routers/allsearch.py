@@ -11,9 +11,7 @@ from typing import Optional, Union
 from urllib.parse import parse_qs, urlparse
 
 import requests as http_requests
-from bs4 import BeautifulSoup
 from fastapi import APIRouter, Depends, HTTPException, status
-from langdetect import detect, LangDetectException
 
 from allSearchAPI.app.config import get_settings as get_allsearch_settings
 from allSearchAPI.app.models import (
@@ -41,151 +39,17 @@ logger = logging.getLogger(__name__)
 
 # --- ScrapingDog helpers (copied from NewScrapper, no import dependency) ---
 
-def _detect_language(text: str) -> Optional[str]:
-    try:
-        return detect(text)
-    except (LangDetectException, Exception):
-        return None
-
-
-def _summarize(text: str, num_sentences: int = 2) -> str:
-    if not text:
-        return ""
-    try:
-        from nltk.tokenize import sent_tokenize
-        sentences = sent_tokenize(text)
-    except Exception:
-        sentences = text.split(".")
-    return " ".join(s.strip() for s in sentences[:num_sentences]).strip()
-
-
-def _extract_publication_date(pub_date_str: str) -> Optional[datetime]:
-    if not pub_date_str:
-        return None
-    try:
-        from dateutil import parser as date_parser
-        return date_parser.parse(pub_date_str, fuzzy=True)
-    except Exception:
-        return None
-
-
-def _extract_json_ld_date(soup: BeautifulSoup) -> Optional[str]:
-    """Pull datePublished out of JSON-LD structured data, if present.
-
-    Most modern publishers (BBC, NYT, etc.) only put the date here, not in
-    the article:published_time / publish-date meta tags.
-    """
-    for script in soup.find_all("script", type="application/ld+json"):
-        try:
-            payload = json.loads(script.string or "")
-        except (ValueError, TypeError):
-            continue
-        candidates = payload if isinstance(payload, list) else [payload]
-        for candidate in candidates:
-            if isinstance(candidate, dict) and candidate.get("datePublished"):
-                return candidate["datePublished"]
-    return None
-
-
 def _scrape_with_scrapingdog(url: str) -> dict:
-    """Fetch and parse an article via ScrapingDog API."""
-    api_key = os.getenv("SCRAPINGDOG_API_KEY")
-    if not api_key:
-        raise ValueError("SCRAPINGDOG_API_KEY environment variable not set")
-
-    base_params = {
-        "api_key": api_key,
-        "url": url,
-    }
-    response = None
-    last_error = None
-    for dynamic in ("true", "false"):
-        resp = http_requests.get(
-            "https://api.scrapingdog.com/scrape",
-            params={**base_params, "dynamic": dynamic},
-            timeout=60,
-            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"},
-        )
-        if resp.status_code == 200:
-            response = resp
-            break
-        last_error = f"ScrapingDog returned status {resp.status_code}: {resp.text[:200]}"
-        logger.warning("ScrapingDog dynamic=%s failed for %s: %s", dynamic, url, last_error)
-
-    if response is None:
-        raise ValueError(last_error)
-
-    html_content = response.text
-    if not html_content or len(html_content) < 200:
-        raise ValueError("Insufficient content returned from ScrapingDog")
-
-    soup = BeautifulSoup(html_content, "html.parser")
-    json_ld_date = _extract_json_ld_date(soup)
-    for tag in soup(["script", "style", "nav", "header", "footer", "aside"]):
-        tag.decompose()
-
-    # Title
-    title = None
-    if soup.title:
-        title = soup.title.get_text(strip=True)
-    if not title or len(title) < 5:
-        og_title = soup.find("meta", property="og:title")
-        if og_title:
-            title = og_title.get("content", "").strip()
-    if not title or len(title) < 5:
-        h1 = soup.find("h1")
-        if h1:
-            title = h1.get_text(strip=True)
-
-    # Content
-    content = None
-    article_tags = soup.find_all(
-        ["article", "main", "div"],
-        class_=lambda x: x and any(k in x.lower() for k in ["article", "content", "post", "story", "entry"]),
-    )
-    if article_tags:
-        article_tags.sort(key=lambda x: len(x.get_text()), reverse=True)
-        content = article_tags[0].get_text(separator=" ", strip=True)
-    if not content or len(content) < 200:
-        body = soup.find("body")
-        if body:
-            for el in body.find_all(["nav", "header", "footer", "aside", "script", "style"]):
-                el.decompose()
-            content = body.get_text(separator=" ", strip=True)
-    if content:
-        content = " ".join(content.split())
-
-    # Publication date
-    publication_date = None
-    date_meta = soup.find("meta", property="article:published_time")
-    if date_meta:
-        publication_date = _extract_publication_date(date_meta.get("content", ""))
-    if not publication_date:
-        date_meta = soup.find("meta", {"name": "publish-date"})
-        if date_meta:
-            publication_date = _extract_publication_date(date_meta.get("content", ""))
-    if not publication_date and json_ld_date:
-        publication_date = _extract_publication_date(json_ld_date)
-
-    # Site name / publication
-    site_name = None
-    og_site = soup.find("meta", property="og:site_name")
-    if og_site:
-        site_name = og_site.get("content", "").strip()
-    if not site_name:
-        parsed = urlparse(url)
-        site_name = parsed.netloc.replace("www.", "")
-
-    summary_text = _summarize(content or "")
-    lang = _detect_language(content or "")
-
+    """Fetch an article via the shared ScrapingDog AI scrape implementation."""
+    scraped = scraper.scrape(url)
+    parsed = urlparse(url)
     return {
-        "title": title,
-        "content": content,
-        "summary": summary_text,
-        "language": lang,
-        "publication_date": publication_date,
-        "site_name": site_name,
+        "title": scraped.title,
+        "content": scraped.text,
+        "summary": scraped.summary,
+        "language": scraped.language,
+        "publication_date": scraped.published_at,
+        "site_name": parsed.netloc.replace("www.", ""),
     }
 
 
@@ -315,6 +179,39 @@ def _scrape_instagram_with_brightdata(urls: list) -> dict:
     return results_by_url
 
 
+_ISO8601_DURATION_RE = re.compile(r"^PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?$")
+
+
+def _iso8601_duration_to_seconds(duration: str) -> Optional[float]:
+    """Convert a YouTube Data API contentDetails.duration (e.g. PT1H12M30S) to seconds."""
+    match = _ISO8601_DURATION_RE.match(duration or "")
+    if not match:
+        return None
+    hours, minutes, seconds = (int(g) if g else 0 for g in match.groups())
+    return float(hours * 3600 + minutes * 60 + seconds)
+
+
+def _fetch_youtube_duration_seconds(video_id: str) -> Optional[float]:
+    """Fetch exact video duration via YouTube Data API v3 videos.list (1 quota unit)."""
+    api_key = os.getenv("GOOGLE_API_KEY")
+    if not api_key:
+        return None
+    try:
+        response = http_requests.get(
+            "https://www.googleapis.com/youtube/v3/videos",
+            params={"part": "contentDetails", "id": video_id, "key": api_key},
+            timeout=15,
+        )
+        response.raise_for_status()
+        items = response.json().get("items") or []
+        if not items:
+            return None
+        return _iso8601_duration_to_seconds(items[0]["contentDetails"]["duration"])
+    except (http_requests.RequestException, ValueError, KeyError) as exc:
+        logger.warning("YouTube Data API duration lookup failed for %s: %s", video_id, exc)
+        return None
+
+
 def _extract_youtube_video_id(url: str) -> str:
     """Extract a video ID from common YouTube video URL formats."""
     parsed = urlparse(url)
@@ -380,6 +277,7 @@ def _scrape_youtube_video(url: str) -> dict:
 
     raw_video = data.get("video") if isinstance(data.get("video"), dict) else {}
     video = dict(raw_video)
+    video_id = video.get("id") or _extract_youtube_video_id(url)
     video_defaults = {
         "id": "not available",
         "title": "not available",
@@ -395,6 +293,9 @@ def _scrape_youtube_video(url: str) -> dict:
         if video.get(key) is None or video.get(key) == "":
             video[key] = fallback
 
+    duration_seconds = _fetch_youtube_duration_seconds(video_id) if video_id else None
+    video["duration_seconds"] = duration_seconds if duration_seconds is not None else "not available"
+
     raw_channel = data.get("channel") if isinstance(data.get("channel"), dict) else {}
     channel = {
         key: raw_channel.get(key) or "not available"
@@ -409,17 +310,23 @@ def _scrape_youtube_video(url: str) -> dict:
     return {"video": video, "channel": channel, "comment": comment}
 
 
-def _scrape_youtube_transcript(url: str) -> str:
-    """Fetch transcript segments from ScrapingDog and combine their text."""
+def _scrape_youtube_transcript(url: str) -> tuple:
+    """Fetch transcript segments from ScrapingDog and combine their text.
+
+    Video duration comes from the YouTube Data API (exact); if that's
+    unavailable, falls back to estimating from the last transcript
+    segment's start + duration.
+    """
     api_key = os.getenv("SCRAPINGDOG_API_KEY")
     if not api_key:
         raise RuntimeError("SCRAPINGDOG_API_KEY environment variable not set")
 
+    video_id = _extract_youtube_video_id(url)
     response = http_requests.get(
         SCRAPINGDOG_YOUTUBE_TRANSCRIPTS_URL,
         params={
             "api_key": api_key,
-            "v": _extract_youtube_video_id(url),
+            "v": video_id,
             "country": "in",
         },
         timeout=60,
@@ -452,18 +359,29 @@ def _scrape_youtube_transcript(url: str) -> str:
         raise ValueError("ScrapingDog returned an unexpected transcript response")
 
     text_segments = []
+    estimated_duration = None
     for segment in data["transcripts"]:
-        if not isinstance(segment, dict) or not isinstance(segment.get("text"), str):
+        if not isinstance(segment, dict):
+            continue
+        start = segment.get("start")
+        length = segment.get("duration")
+        if isinstance(start, (int, float)) and isinstance(length, (int, float)):
+            estimated_duration = max(estimated_duration or 0, start + length)
+        if not isinstance(segment.get("text"), str):
             continue
         normalized_text = _clean_transcript_text(segment["text"])
         if normalized_text:
             text_segments.append(normalized_text)
 
+    duration_seconds = _fetch_youtube_duration_seconds(video_id)
+    if duration_seconds is None:
+        duration_seconds = estimated_duration
+
     if not text_segments:
-        return "not available"
+        return "not available", duration_seconds
 
     cleaned_transcript = _clean_transcript_text(" ".join(text_segments))
-    return _format_transcript_paragraphs(cleaned_transcript)
+    return _format_transcript_paragraphs(cleaned_transcript), duration_seconds
 
 
 def _clean_transcript_text(text: str) -> str:
@@ -665,8 +583,8 @@ def scrape_youtube_video_endpoint(payload: YouTubeVideoScrapeRequest):
 def scrape_youtube_transcript_endpoint(payload: YouTubeVideoScrapeRequest):
     """Scrape and combine a YouTube video's transcript via ScrapingDog."""
     try:
-        transcript = _scrape_youtube_transcript(str(payload.url))
-        return YouTubeTranscriptScrapeResponse(content=transcript)
+        transcript, duration_seconds = _scrape_youtube_transcript(str(payload.url))
+        return YouTubeTranscriptScrapeResponse(content=transcript, duration_seconds=duration_seconds)
     except RuntimeError as exc:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
     except ValueError as exc:
