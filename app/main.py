@@ -1397,6 +1397,20 @@ def _validate_script(text: str, lang_code: str):
             f"Output for {lang_code} must use {expected_script} script; "
             "no non-Latin script detected (e.g. do not leave keywords in English or ALL CAPS)."
         )
+    # Catch partial misses: a quoted phrase (proper noun, ticker, acronym) left
+    # entirely untranslated in Latin script, e.g. ++"ULTRACEMCO", while the rest
+    # of the query is correctly translated. The whole-string check above only
+    # catches a fully-untranslated query, not a few leftover English terms.
+    if expected_script and expected_script != "Latin":
+        untranslated = [
+            phrase for phrase in re.findall(r'"([^"]+)"', text)
+            if re.fullmatch(r"[A-Za-z0-9 .&\-]+", phrase)
+        ]
+        if untranslated:
+            return False, (
+                f"Quoted term(s) left untranslated in English: {untranslated}; "
+                f"transliterate every quoted phrase into {expected_script} script."
+            )
     return True, None
 
 

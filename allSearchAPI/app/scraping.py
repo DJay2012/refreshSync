@@ -57,7 +57,35 @@ def _extract_ai_article(response_text: str) -> tuple[str, str]:
     except Exception:
         payload = None
 
+    # ScrapingDog's AI query sometimes wraps results in a list under a key like
+    # "article_headlines_and_content": [{"headline": ..., "content": ...}, ...]
+    # or "article_headlines": ["headline1", "headline2", ...] (plain strings,
+    # no content) instead of returning a flat {"headline": ..., "content": ...}
+    # object.
     if isinstance(payload, dict):
+        for value in payload.values():
+            if isinstance(value, list) and value and isinstance(value[0], (dict, str)):
+                payload = value
+                break
+
+    if isinstance(payload, list) and payload and isinstance(payload[0], str):
+        title = _clean_whitespace(" | ".join(str(v) for v in payload))
+        content = title
+    elif isinstance(payload, list) and payload and isinstance(payload[0], dict):
+        titles = []
+        contents = []
+        for entry in payload:
+            if not isinstance(entry, dict):
+                continue
+            entry_title = entry.get("headline") or entry.get("title")
+            if entry_title:
+                titles.append(str(entry_title).strip())
+            entry_content = entry.get("content") or entry.get("text")
+            if entry_content:
+                contents.append(str(entry_content))
+        title = _clean_whitespace(" | ".join(titles))
+        content = _clean_whitespace(" ".join(contents))
+    elif isinstance(payload, dict):
         title = str(
             payload.get("headline")
             or payload.get("headlines")
