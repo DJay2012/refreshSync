@@ -100,6 +100,7 @@ class AdhocScrapeResponse(BaseModel):
     headline: Optional[str] = None
     summary: Optional[str] = None
     content: Optional[str] = None
+    content_type: Optional[str] = Field(None, alias="contentType")
     publication: Optional[str] = None
     articledate: Optional[datetime] = Field(None, alias="articleDate")
 

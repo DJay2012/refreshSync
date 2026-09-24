@@ -46,6 +46,7 @@ def _scrape_with_scrapingdog(url: str) -> dict:
     return {
         "title": scraped.title,
         "content": scraped.text,
+        "content_type": scraped.content_type,
         "summary": scraped.summary,
         "language": scraped.language,
         "publication_date": scraped.published_at,
@@ -482,6 +483,7 @@ def scrape_endpoint(
             headline=data.get("title"),
             summary=data.get("summary"),
             content=data.get("content"),
+            content_type=data.get("content_type"),
             publication=publication,
             articledate=data.get("publication_date"),
         )
